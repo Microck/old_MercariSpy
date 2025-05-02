@@ -1,6 +1,8 @@
 # 🇯🇵 MercariSpy 🕵️
 ## Mercari Product Monitor Bot
 
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+
 A Python-based monitoring tool to track new listings on Mercari.jp based on your search queries and receive instant Telegram notifications.
 
 This script uses Selenium and Undetected Chromedriver to simulate real browser activity, aiming to bypass basic bot detection measures employed by Mercari.jp.
