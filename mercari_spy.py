@@ -82,16 +82,28 @@ RATE_LAST_UPDATED = 0
 # ---
 
 # --- Initialize Telegram Bot ---
+class DummyBot: # Fallback if real bot init fails
+    """A dummy bot class that prints messages instead of sending them."""
+    def send_message(self, chat_id, text, **kwargs):
+        print(f"[Telegram Dummy] {text}")
+    def send_photo(self, chat_id, photo, **kwargs):
+        print(f"[Telegram Dummy Photo] {kwargs.get('caption', '')}")
+    def get_me(self): # Add a dummy get_me method
+        class DummyBotInfo:
+            username = "DummyBot"
+        return DummyBotInfo()
+
+# --- Initialize Telegram Bot ---
 try:
+    # Attempt to initialize the real bot
     telegram_bot = telegram.Bot(token=CONFIG["TELEGRAM_TOKEN"])
     # Test connection by getting bot info
     bot_info = telegram_bot.get_me()
     print(f"Successfully connected to Telegram as bot: {bot_info.username}")
 except Exception as e:
+    # If real bot fails, print error and assign the DummyBot instance
     print(f"Error initializing Telegram bot: {e}")
-    class DummyBot: # Fallback if init fails
-        def send_message(self, chat_id, text, **kwargs): print(f"[Telegram Dummy] {text}")
-        def send_photo(self, chat_id, photo, **kwargs): print(f"[Telegram Dummy Photo] {kwargs.get('caption', '')}")
+    print("!!! Using DummyBot - Telegram messages will only be printed to console !!!")
     telegram_bot = DummyBot()
 # --- End Bot Initialization ---
 
@@ -265,7 +277,7 @@ def setup_browser():
         # Let UC handle the version detection unless specified
         # If you encounter version mismatch errors, uncomment and set your Chrome version:
         # driver = uc.Chrome(options=options, version_main=135)
-        driver = uc.Chrome(options=options, version_main=None)
+        driver = uc.Chrome(options=options, version_main=135) # Force version 135
         driver.set_page_load_timeout(60)
         log_message("Browser setup complete.", level="debug")
         return driver
