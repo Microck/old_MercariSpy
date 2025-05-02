@@ -1,4 +1,4 @@
-# 🇯🇵 Mercari Spy 🕵️
+# 🇯🇵 MercariSpy 🕵️
 ## Mercari Product Monitor Bot
 
 A Python-based monitoring tool to track new listings on Mercari.jp based on your search queries and receive instant Telegram notifications.
