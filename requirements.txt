@@ -1,0 +1,7 @@
+selenium
+undetected-chromedriver
+requests
+python-telegram-bot
+beautifulsoup4
+webdriver-manager
+pillow
