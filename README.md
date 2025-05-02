@@ -22,6 +22,7 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
 *   **Headless Mode:** Can run Chrome invisibly in the background.
 *   **Configurable:** Settings managed via `config.json`.
 *   **Robust Scraping:** Targets visible HTML elements, making it less reliant on potentially protected internal data structures.
+*   **Optional White Background Filtering:** Can attempt to filter out listings with likely studio/white backgrounds based on image analysis (requires `Pillow`).
 *   **Error Handling & Logging:** Includes basic error handling, logging, and saves screenshots on certain errors for debugging.
 
 ## Prerequisites
@@ -48,6 +49,7 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
     python-telegram-bot
     beautifulsoup4
     webdriver-manager
+    pillow
     ```
     Then install them:
     ```bash
@@ -65,7 +67,10 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
       "CHECK_INTERVAL_MAX": 360,
       "SEND_DEBUG_MESSAGES": true,
       "CURRENCY_RATE_UPDATE_INTERVAL_SECONDS": 3600,
-      "SEND_ITEM_SCREENSHOTS": false
+      "SEND_ITEM_SCREENSHOTS": false,
+      "FILTER_WHITE_BACKGROUNDS": true,
+      "WHITE_BG_BORDER_THRESHOLD": 0.90,
+      "WHITE_BG_COLOR_THRESHOLD": 245
     }
     ```
     *   **`TELEGRAM_TOKEN`**: **(Required & Sensitive)** Your Telegram Bot Token obtained from BotFather. **Keep this secret!**
@@ -87,12 +92,15 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
 
 *   **`TELEGRAM_TOKEN`**: Your Telegram Bot API token.
 *   **`TELEGRAM_CHAT_ID`**: Your target chat ID for notifications.
-*   **`USER_AGENT`**: The User-Agent string the browser will use. Keep it looking like a modern browser.
-*   **`HEADLESS`**: `true` to run Chrome invisibly, `false` to show the browser window (useful for debugging).
-*   **`CHECK_INTERVAL_MIN` / `MAX`**: Minimum and maximum time (in seconds) to wait between full check cycles. A random interval within this range is chosen each time.
-*   **`SEND_DEBUG_MESSAGES`**: `true` to send detailed operational logs and error screenshots to Telegram, `false` to only send new item alerts.
-*   **`CURRENCY_RATE_UPDATE_INTERVAL_SECONDS`**: How often (in seconds) to refresh the JPY to EUR exchange rate (default: 1 hour).
-*   **`SEND_ITEM_SCREENSHOTS`**: `true` to send a screenshot with each new item alert, `false` to only send the text alert. Setting to `false` significantly reduces the risk of hitting Telegram rate limits if many items are found.
+*   **`USER_AGENT`**: The User-Agent string the browser will use.
+*   **`HEADLESS`**: `true` to run Chrome invisibly, `false` to show the browser window.
+*   **`CHECK_INTERVAL_MIN` / `MAX`**: Min/max time (seconds) between check cycles.
+*   **`SEND_DEBUG_MESSAGES`**: `true` to send detailed logs/errors to Telegram.
+*   **`CURRENCY_RATE_UPDATE_INTERVAL_SECONDS`**: How often (seconds) to refresh JPY->EUR rate.
+*   **`SEND_ITEM_SCREENSHOTS`**: `true` to send item screenshots with alerts (increases rate limit risk).
+*   **`FILTER_WHITE_BACKGROUNDS`**: `true` to enable the white background image filter, `false` to disable.
+*   **`WHITE_BG_BORDER_THRESHOLD`**: (Used if filter enabled) Percentage (0.0 to 1.0) of border pixels that must be near-white to trigger the filter (e.g., 0.95 = 95%).
+*   **`WHITE_BG_COLOR_THRESHOLD`**: (Used if filter enabled) RGB value (0-255) threshold. Pixels with R, G, and B values all *above* this are considered "near-white" (e.g., 245 catches very light grays).
 
 ## Usage
 
@@ -129,6 +137,7 @@ The script will start, perform an initial check for all queries (populating the 
     *   **Wait & Scrape:** Waits for the item container (`#item-grid`) to be present and then finds all item cards (`<li>`) within it.
     *   **Extract Data:** For each item card, it attempts to extract the link, ID, title, price (JPY), and image URL by finding specific elements *within* the card using CSS selectors. It includes fallbacks for robustness.
     *   **Currency Conversion:** Converts the extracted JPY price to EUR.
+    *   **Image Analysis (Optional): If FILTER_WHITE_BACKGROUNDS is true and an image URL was found, downloads the image and analyzes border pixels. If deemed likely white background, the item is skipped.
     *   **Take Screenshot:** Captures a screenshot of the individual item card.
 4.  **Comparison:** Compares the IDs of extracted items against the list of known product IDs for that query stored in `mercari_known_products.json`.
 5.  **Alerting:** If new item IDs are found:

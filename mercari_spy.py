@@ -20,6 +20,10 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     StaleElementReferenceException,
 )
+# --- Image Processing Imports ---
+from PIL import Image
+import io
+# -----------------------------
 
 # --- Configuration Loading ---
 try:
@@ -69,7 +73,7 @@ os.makedirs(PAGE_LOG_DIR, exist_ok=True)
 # --- End Directory Setup ---
 
 # --- File Paths ---
-KNOWN_PRODUCTS_FILE = os.path.join(DATA_DIR, "mercari_known_products.json") # Renamed
+KNOWN_PRODUCTS_FILE = os.path.join(DATA_DIR, "mercari_known_products.json")
 # --- End File Paths ---
 
 # --- Global variables ---
@@ -80,6 +84,9 @@ RATE_LAST_UPDATED = 0
 # --- Initialize Telegram Bot ---
 try:
     telegram_bot = telegram.Bot(token=CONFIG["TELEGRAM_TOKEN"])
+    # Test connection by getting bot info
+    bot_info = telegram_bot.get_me()
+    print(f"Successfully connected to Telegram as bot: {bot_info.username}")
 except Exception as e:
     print(f"Error initializing Telegram bot: {e}")
     class DummyBot: # Fallback if init fails
@@ -110,7 +117,9 @@ def log_message(message, level="info", photo_path=None, caption=""):
                         text=message[i:i+max_len]
                     )
         except Exception as e:
-            print(f"Error sending debug message/photo to Telegram: {e}")
+            # Avoid infinite loops if the dummy bot is active
+            if not isinstance(telegram_bot, DummyBot):
+                 print(f"Error sending debug message/photo to Telegram: {e}")
 
 # --- Currency Conversion ---
 def get_jpy_to_eur_rate():
@@ -155,7 +164,80 @@ def jpy_to_euro(jpy_str):
         print(f"Error converting JPY string '{jpy_str}' to EUR: {e}")
         return "€N/A (Conv. Error)"
 
-# --- Browser Setup (Adapted from XYSpy) ---
+# --- Image Background Check Function ---
+def is_background_white(image_url, border_margin=5, color_threshold=245, border_threshold=0.95):
+    """
+    Downloads an image and checks if its border pixels are predominantly white.
+    Returns True if likely white background, False otherwise or on error.
+    """
+    if not image_url or not image_url.startswith('http'):
+        log_message(f"Invalid or missing image URL for background check: {image_url}", level="debug")
+        return False # No valid URL to check
+
+    log_message(f"Analyzing background for image: ...{image_url[-50:]}", level="debug")
+    try:
+        # Download image data with timeout
+        response = requests.get(image_url, stream=True, timeout=15) # 15 sec timeout for download
+        response.raise_for_status()
+
+        # Check if content looks like an image before processing
+        content_type = response.headers.get('content-type', '').lower()
+        if not content_type.startswith('image/'):
+            log_message(f"Skipping background check, content-type not image: {content_type} for URL ...{image_url[-50:]}", level="debug")
+            return False
+
+        img_data = response.content
+        # Open image from bytes, convert to RGB
+        img = Image.open(io.BytesIO(img_data)).convert('RGB')
+        width, height = img.size
+
+        # Avoid processing tiny images or images smaller than margin
+        if width <= border_margin * 2 or height <= border_margin * 2:
+            log_message(f"Image too small ({width}x{height}) for background check.", level="debug")
+            return False # Cannot reliably check border
+
+        border_pixels = []
+        # Sample top/bottom borders
+        for x in range(width):
+            for y in range(border_margin):
+                border_pixels.append(img.getpixel((x, y))) # Top
+                border_pixels.append(img.getpixel((x, height - 1 - y))) # Bottom
+        # Sample left/right borders (avoiding corners already sampled)
+        for y in range(border_margin, height - border_margin):
+             for x in range(border_margin):
+                  border_pixels.append(img.getpixel((x, y))) # Left
+                  border_pixels.append(img.getpixel((width - 1 - x, y))) # Right
+
+        if not border_pixels:
+            log_message("No border pixels collected (should not happen if size check passed).", level="warning")
+            return False
+
+        white_count = 0
+        for r, g, b in border_pixels:
+            # Check if pixel is close to white based on threshold
+            if r >= color_threshold and g >= color_threshold and b >= color_threshold:
+                white_count += 1
+
+        white_percentage = white_count / len(border_pixels)
+        is_white = white_percentage >= border_threshold
+        log_message(f"Image ...{image_url[-50:]} white border %: {white_percentage:.2f} -> White BG Filter: {is_white}", level="debug")
+        return is_white
+
+    except requests.exceptions.Timeout:
+        log_message(f"Timeout downloading image {image_url}", level="warning")
+        return False # Treat download failure as non-white
+    except requests.exceptions.RequestException as e:
+        log_message(f"Failed to download image {image_url}: {e}", level="warning")
+        return False
+    except Image.UnidentifiedImageError:
+         log_message(f"Failed to identify image format for {image_url}", level="warning")
+         return False
+    except Exception as e:
+        # Catch other PIL errors or unexpected issues
+        log_message(f"Failed to process image {image_url}: {e}", level="warning")
+        return False
+
+# --- Browser Setup ---
 def setup_browser():
     """Sets up the undetected_chromedriver instance."""
     log_message("Setting up browser...", level="debug")
@@ -168,34 +250,32 @@ def setup_browser():
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-extensions")
-        # options.add_argument("--disable-web-security") # Use with caution
-        # options.add_argument("--allow-running-insecure-content") # Use with caution
         options.add_argument("--disable-infobars")
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--disable-notifications")
-        options.add_argument("--lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7") # Prioritize Japanese
+        options.add_argument("--lang=ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
         options.add_argument("--disable-features=UserAgentClientHint")
 
         if CONFIG.get("HEADLESS", True):
             log_message("Running in HEADLESS mode.", level="debug")
             options.add_argument("--headless=new")
-            # options.add_argument("--disable-features=IsolateOrigins,site-per-process") # May cause issues
         else:
             log_message("Running in HEADED mode.", level="debug")
 
         # Let UC handle the version detection unless specified
-        driver = uc.Chrome(options=options, version_main=135) # Specify version 135
-        driver.set_page_load_timeout(60) # 60 second page load timeout
+        # If you encounter version mismatch errors, uncomment and set your Chrome version:
+        # driver = uc.Chrome(options=options, version_main=135)
+        driver = uc.Chrome(options=options, version_main=None)
+        driver.set_page_load_timeout(60)
         log_message("Browser setup complete.", level="debug")
         return driver
     except Exception as e:
         log_message(f"Error creating undetected-chromedriver: {e}", level="error")
-        # Fallback attempt (optional, requires webdriver-manager)
         try:
             log_message("Attempting fallback to standard chromedriver...", level="warning")
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
-            options = webdriver.ChromeOptions() # Standard options
+            options = webdriver.ChromeOptions()
             options.add_argument(f"user-agent={CONFIG['USER_AGENT']}")
             options.add_argument("--window-size=1920,1080")
             options.add_argument("--no-sandbox")
@@ -214,61 +294,43 @@ def setup_browser():
 
 def apply_sort_by_newest_mercari(driver):
     """Attempts to sort Mercari results by Newest using the <select> dropdown."""
-    wait_time = 15 # Wait time for the select element
+    wait_time = 15
     log_message("Attempting to apply 'Sort by Newest' using <select> dropdown...", level="debug")
     try:
-        # --- NEW Selector Strategy for Mercari Sort Dropdown ---
-        # Use the CSS selector provided by the user, targeting the <select> element
-        # Note: IDs like 'search-result' might change, but the structure below it is more likely stable.
-        # Using a more concise selector targeting the name attribute which seems relevant.
-        # select_element_css = "#search-result > div > div > div > section.sc-fe141818-2.dZkxEP.mer-spacing-b-16 > div > div.sc-d4b82f4-9.sc-fe141818-1.iwsraC.fBfzLE > div.sc-d4b82f4-9.sc-e54b9a83-0.iwsraC.jNceSq > label > div.merSelect.sc-e54b9a83-2.dyMPmC > div > div.selectWrapper__da4764db > select" # User provided selector
-        # --- Simpler Selector (Often more robust if name is stable) ---
-        select_element_css = "select[name='sortOrder']" # Targets the select element by its name attribute
-
+        select_element_css = "select[name='sortOrder']"
         log_message(f"Waiting for sort <select> element using CSS: {select_element_css}", level="debug")
-
-        # Wait for the select element to be present
         select_element = WebDriverWait(driver, wait_time).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, select_element_css))
         )
-
         log_message("Sort <select> element found. Selecting 'Newest' option...", level="debug")
-
-        # Use Selenium's Select class for easy option selection
         select_object = Select(select_element)
-
-        # Select the option for "Newest" (新しい順)
-        # From the screenshot, its value is "created_time:desc"
         value_for_newest = "created_time:desc"
         select_object.select_by_value(value_for_newest)
-
         log_message(f"Selected option with value '{value_for_newest}'. Waiting for results to reload...", level="debug")
-        # Allow ample time for the page results to potentially update
         time.sleep(random.uniform(5, 7))
         log_message("Applied sort by 'Newest'.")
         return True
-
     except TimeoutException as e:
         error_screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"sort_select_timeout_error_{int(time.time())}.png")
         err_msg = f"Timeout finding Mercari sort <select> element ({e}). Selector '{select_element_css}' might be wrong or page didn't load correctly."
         log_message(err_msg, level="error", photo_path=error_screenshot_path, caption=err_msg)
         try: driver.save_screenshot(error_screenshot_path)
         except: pass
-        return False # Sorting failed
+        return False
     except NoSuchElementException as e:
          error_screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"sort_select_no_option_error_{int(time.time())}.png")
          err_msg = f"Could not find the option with value '{value_for_newest}' in the sort dropdown ({e})."
          log_message(err_msg, level="error", photo_path=error_screenshot_path, caption=err_msg)
          try: driver.save_screenshot(error_screenshot_path)
          except: pass
-         return False # Sorting failed
+         return False
     except Exception as e:
         error_screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"sort_select_general_error_{int(time.time())}.png")
         err_msg = f"General error applying Mercari sort via <select>: {e}"
         log_message(err_msg, level="error", photo_path=error_screenshot_path, caption=err_msg)
         try: driver.save_screenshot(error_screenshot_path)
         except: pass
-        return False # Sorting failed
+        return False
 
 def extract_products_mercari(driver, query):
     """Extracts product details from the visible elements on Mercari search results."""
@@ -276,7 +338,7 @@ def extract_products_mercari(driver, query):
     log_message(f"Extracting products for query '{query}'...", level="debug")
     try:
         container_selector = "#item-grid"
-        item_card_selector = f"{container_selector} > ul > li[data-testid='item-cell']" # Added data-testid for potentially more specific card selection
+        item_card_selector = f"{container_selector} > ul > li[data-testid='item-cell']"
 
         log_message(f"Waiting for item container: '{container_selector}'", level="debug")
         try:
@@ -321,6 +383,7 @@ def extract_products_mercari(driver, query):
              return {}
 
         processed_count = 0
+        stored_count = 0 # Keep track of items actually stored
         for i, item_element in enumerate(item_elements):
             product_id = None
             link = None
@@ -328,117 +391,102 @@ def extract_products_mercari(driver, query):
             price = "Price not found"
             item_image = ""
             screenshot_path = None
+            is_white_bg = False # Default for this item
 
             try:
                 # Scroll element into view gently
                 driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", item_element)
-                time.sleep(0.3)
+                time.sleep(0.3) # Small pause after scroll
 
                 # --- Link and ID ---
                 try:
-                    # Use the data-testid for the link
                     link_element_selector = "a[data-testid='thumbnail-link']"
                     link_element = item_element.find_element(By.CSS_SELECTOR, link_element_selector)
                     link = link_element.get_attribute('href')
                     if link:
                         product_id_match = re.search(r'/(m\d+)/?$', link)
-                        if product_id_match:
-                            product_id = product_id_match.group(1)
-                        else:
-                            product_id = f"hash_{hash(link)}_{i}" # Fallback ID
-                    else:
-                        raise NoSuchElementException("Link href was empty")
+                        if product_id_match: product_id = product_id_match.group(1)
+                        else: product_id = f"hash_{hash(link)}_{i}"
+                    else: raise NoSuchElementException("Link href was empty")
                 except NoSuchElementException:
                     log_message(f"Could not find link/ID using selector '{link_element_selector}' for item {i}. Skipping.", level="warning")
-                    continue # Essential info missing
+                    continue
 
                 # --- Title ---
                 try:
-                    # Use the data-testid for the title
                     title_selector = "span[data-testid='thumbnail-item-name']"
                     title_elem = item_element.find_element(By.CSS_SELECTOR, title_selector)
                     title = title_elem.text.strip()
-                    if not title or len(title) < 2: # Check if title seems valid
+                    if not title or len(title) < 2:
                         log_message(f"Found title element but text is short/empty for {product_id}. Text: '{title}'", level="debug")
-                        # Fallback: Try aria-label of the thumbnail div
                         try:
                             thumb_div = item_element.find_element(By.CSS_SELECTOR, "div.merItemThumbnail")
                             aria_label = thumb_div.get_attribute('aria-label')
                             if aria_label:
-                                # Extract title part before price from aria-label
                                 title_match = re.match(r'^(.*?)\s+\d{1,3}(?:,\d{3})*円', aria_label)
                                 if title_match: title = title_match.group(1).strip()
-                        except: pass # Ignore errors in fallback
+                        except: pass
                 except NoSuchElementException:
                     log_message(f"Could not find title using selector '{title_selector}' for {product_id}.", level="warning")
-                    # Add other fallbacks if needed
 
                 # --- Price ---
                 try:
-                    # Primary strategy: Extract from aria-label of the thumbnail div
-                    thumb_div_selector = "div.merItemThumbnail"
+                    thumb_div_selector = "div.merItemThumbnail" # Assuming this class is stable enough
                     thumb_div = item_element.find_element(By.CSS_SELECTOR, thumb_div_selector)
                     aria_label = thumb_div.get_attribute('aria-label')
                     if aria_label:
-                        # Regex to find Yen price (¥ optional, handles commas)
                         price_match = re.search(r'(\d{1,3}(?:,\d{3})*|\d+)\s*円', aria_label)
-                        if price_match:
-                            price = f"¥{price_match.group(1)}" # Re-add Yen symbol for consistency
-                        else:
-                            log_message(f"Could not find Yen price pattern in aria-label for {product_id}. Label: '{aria_label}'", level="debug")
-                    else:
-                        log_message(f"Aria-label empty for {product_id}.", level="debug")
+                        if price_match: price = f"¥{price_match.group(1)}"
+                        else: log_message(f"Could not find Yen price pattern in aria-label for {product_id}. Label: '{aria_label}'", level="debug")
+                    else: log_message(f"Aria-label empty for {product_id}.", level="debug")
 
-                    # Fallback: Search for visible price elements if aria-label fails
                     if price == "Price not found":
                         log_message(f"Price not in aria-label for {product_id}. Trying visible element search...", level="debug")
-                        price_selectors = [
-                            ".merPrice", # From the snippet, might contain EUR or JPY
-                            "span[class*='itemPrice']",
-                            "div[class*='itemPrice']",
-                            "span[class*='price']",
-                            "div[class*='price']",
-                        ]
+                        price_selectors = [".merPrice", "span[class*='itemPrice']", "div[class*='itemPrice']", "span[class*='price']", "div[class*='price']"]
                         found_price = False
                         for selector in price_selectors:
                             try:
                                 price_elems = item_element.find_elements(By.CSS_SELECTOR, selector)
                                 for pe in price_elems:
                                     p_text = pe.text.strip()
-                                    if '¥' in p_text: # Look specifically for Yen symbol
-                                        price = p_text; found_price = True; break
+                                    if '¥' in p_text: price = p_text; found_price = True; break
                                 if found_price: break
                             except NoSuchElementException: continue
-                        if not found_price:
-                             log_message(f"Could not find visible Yen price for {product_id} using selectors.", level="warning")
-
-                except Exception as price_e:
-                    log_message(f"Error extracting price for {product_id}: {price_e}", level="warning")
+                        if not found_price: log_message(f"Could not find visible Yen price for {product_id} using selectors.", level="warning")
+                except Exception as price_e: log_message(f"Error extracting price for {product_id}: {price_e}", level="warning")
 
                 # --- Image ---
                 try:
-                    # Target the img tag directly within the figure/picture structure
                     img_selector = "figure img"
                     img_elem = item_element.find_element(By.CSS_SELECTOR, img_selector)
                     item_image = img_elem.get_attribute("src") or img_elem.get_attribute("data-src")
                     if not (item_image and item_image.startswith('http')):
                         log_message(f"Found img tag but src is invalid for {product_id}. Src: '{item_image}'", level="warning")
-                        item_image = "" # Reset if invalid
-                except NoSuchElementException:
-                    log_message(f"Could not find image using selector '{img_selector}' for {product_id}.", level="warning")
-                except Exception as img_e:
-                    log_message(f"Error extracting image for {product_id}: {img_e}", level="warning")
+                        item_image = ""
+                except NoSuchElementException: log_message(f"Could not find image using selector '{img_selector}' for {product_id}.", level="warning")
+                except Exception as img_e: log_message(f"Error extracting image for {product_id}: {img_e}", level="warning")
+
+                # --- White Background Check ---
+                if CONFIG.get("FILTER_WHITE_BACKGROUNDS", False) and item_image:
+                    is_white_bg = is_background_white(
+                        item_image,
+                        color_threshold=CONFIG.get("WHITE_BG_COLOR_THRESHOLD", 245),
+                        border_threshold=CONFIG.get("WHITE_BG_BORDER_THRESHOLD", 0.95)
+                    )
+                    if is_white_bg:
+                        log_message(f"Skipping item {product_id} due to detected white background.", level="info")
+                        processed_count += 1
+                        continue
+                # --- End White Background Check ---
 
                 # --- Screenshot ---
                 screenshot_path = os.path.join(ITEM_SCREENSHOT_DIR, f"item_{product_id}.png")
-                try:
-                    item_element.screenshot(screenshot_path)
+                try: item_element.screenshot(screenshot_path)
                 except Exception as screenshot_error:
                     log_message(f"Error taking item screenshot for {product_id}: {screenshot_error}", level="warning")
                     screenshot_path = None
 
                 # --- Store Product ---
-                # Only store if essential info (ID, link, title, price) was found
                 if product_id and link and title != "Title not found" and price != "Price not found":
                     euro_price = jpy_to_euro(price)
                     products[product_id] = {
@@ -451,10 +499,12 @@ def extract_products_mercari(driver, query):
                         "screenshot_path": screenshot_path
                     }
                     processed_count += 1
+                    stored_count += 1
                     log_message(f"Extracted item {product_id}: {title[:30]}... - {price}", level="debug")
                 else:
-                    log_message(f"Skipping storage for item {product_id or i} due to missing essential data (Title: '{title}', Price: '{price}').", level="warning")
-
+                    if not is_white_bg:
+                         log_message(f"Skipping storage for item {product_id or i} due to missing essential data (Title: '{title}', Price: '{price}').", level="warning")
+                    processed_count += 1
 
             except StaleElementReferenceException:
                 log_message(f"Item element became stale during processing (item index {i}). Skipping.", level="warning")
@@ -468,7 +518,7 @@ def extract_products_mercari(driver, query):
                 except: pass
                 continue
 
-        log_message(f"Successfully processed and stored {processed_count} / {len(item_elements)} items for query '{query}'.")
+        log_message(f"Processed {processed_count} / {len(item_elements)} items. Stored {stored_count} items for query '{query}'.")
 
     except Exception as e:
         log_message(f"Critical error during product extraction for '{query}': {e}", level="error")
@@ -479,22 +529,19 @@ def extract_products_mercari(driver, query):
 
     return products
 
-
 def search_mercari(driver, query):
     """Performs search, sorts, and extracts products from Mercari."""
     log_message(f"Starting search process for query: '{query}'")
     try:
-        # Use the URL template from the previous script
-        encoded_query = requests.utils.quote(query) # Use requests' quote for safety
-        search_url = f"https://jp.mercari.com/search?keyword={encoded_query}&status=on_sale" # Base URL without sort initially
+        encoded_query = requests.utils.quote(query)
+        search_url = f"https://jp.mercari.com/search?keyword={encoded_query}&status=on_sale"
         log_message(f"Navigating to: {search_url}", level="debug")
         driver.get(search_url)
-        time.sleep(random.uniform(3, 5)) # Wait for initial page load elements
+        time.sleep(random.uniform(3, 5))
 
-        # --- Check for block/error indicators (Adapt from XYSpy) ---
-        # Mercari might use different text or elements
-        block_page_indicators_text = ["アクセスが集中しています", "Access Denied", "リクエストが一時的にブロックされました"] # Example Japanese/English indicators
-        block_page_selectors = ["h1[class*='error']", "div#error-page"] # Example selectors
+        # --- Check for block/error indicators ---
+        block_page_indicators_text = ["アクセスが集中しています", "Access Denied", "リクエストが一時的にブロックされました"]
+        block_page_selectors = ["h1[class*='error']", "div#error-page"]
         page_title = driver.title.lower()
         page_source = driver.page_source
 
@@ -504,9 +551,8 @@ def search_mercari(driver, query):
             log_message(error_msg, level="error", photo_path=block_page_path, caption=error_msg)
             try: driver.save_screenshot(block_page_path)
             except: pass
-            return {} # Skip this query for this cycle
+            return {}
 
-        # Check using selectors
         for selector in block_page_selectors:
             try:
                 block_element = driver.find_element(By.CSS_SELECTOR, selector)
@@ -517,8 +563,7 @@ def search_mercari(driver, query):
                     try: driver.save_screenshot(block_page_path)
                     except: pass
                     return {}
-            except NoSuchElementException:
-                pass # Selector not found, continue checking
+            except NoSuchElementException: pass
         # --- End block page check ---
 
         # --- Apply sorting - MANDATORY ---
@@ -526,18 +571,15 @@ def search_mercari(driver, query):
         sort_applied = apply_sort_by_newest_mercari(driver)
         if not sort_applied:
             log_message(f"Sorting failed for query '{query}'. Skipping item extraction.", level="warning")
-            # Screenshot is saved within the sort function on failure
-            return {} # Return empty if sorting failed
+            return {}
         log_message(f"Sorting successful for '{query}'.")
         # --- End Sorting ---
 
-        # Add delay *after* successful sort, *before* extracting products
         post_sort_delay = random.uniform(2, 4)
         log_message(f"Waiting {post_sort_delay:.1f}s after sort before extracting...", level="debug")
         time.sleep(post_sort_delay)
 
-        # --- Handle potential CAPTCHAs (Basic Check - Add more if needed) ---
-        # Mercari might use standard CAPTCHAs like reCAPTCHA/hCaptcha
+        # --- Basic CAPTCHA Check ---
         captcha_iframes = driver.find_elements(By.TAG_NAME, "iframe")
         for frame in captcha_iframes:
             src = frame.get_attribute('src') or ""
@@ -547,15 +589,13 @@ def search_mercari(driver, query):
                 log_message(error_msg, level="error", photo_path=captcha_path, caption=error_msg)
                 try: driver.save_screenshot(captcha_path)
                 except: pass
-                # TODO: Implement manual CAPTCHA handling via Telegram if this occurs often
-                return {} # Skip if CAPTCHA found
+                return {}
         # --- End Basic CAPTCHA Check ---
 
-        # --- Extract Products from Visible Elements ---
+        # --- Extract Products ---
         products = extract_products_mercari(driver, query)
         # --- End Extraction ---
 
-        # Save final search results screenshot (after sort and extraction attempt)
         search_screenshot_path = os.path.join(SEARCH_SCREENSHOT_DIR, f"search_{query.replace(' ', '_')}_{int(time.time())}.png")
         try: driver.save_screenshot(search_screenshot_path)
         except: pass
@@ -573,17 +613,12 @@ def search_mercari(driver, query):
     except WebDriverException as e:
         screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"webdriver_error_search_{query.replace(' ', '_')}_{int(time.time())}.png")
         err_msg = f"Browser error during search for '{query}': {e}"
-        # Check for common critical errors
-        if "net::ERR_CONNECTION_REFUSED" in str(e) or "net::ERR_NAME_NOT_RESOLVED" in str(e):
-             err_msg += " (Network/DNS issue?)"
-        elif "session deleted because of page crash" in str(e) or "disconnected" in str(e):
-             err_msg += " (Browser crashed or disconnected)"
-             # Consider restarting the browser or exiting
-             raise e # Re-raise critical browser errors to potentially restart
+        if "net::ERR_CONNECTION_REFUSED" in str(e) or "net::ERR_NAME_NOT_RESOLVED" in str(e): err_msg += " (Network/DNS issue?)"
+        elif "session deleted because of page crash" in str(e) or "disconnected" in str(e): err_msg += " (Browser crashed or disconnected)"; raise e
         log_message(err_msg, level="error", photo_path=screenshot_path, caption=err_msg)
         try: driver.save_screenshot(screenshot_path)
         except: pass
-        return {} # Skip this query cycle
+        return {}
     except Exception as e:
         screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"unknown_error_search_{query.replace(' ', '_')}_{int(time.time())}.png")
         err_msg = f"Unexpected error during search for '{query}': {e}"
@@ -592,7 +627,7 @@ def search_mercari(driver, query):
         except: pass
         return {}
 
-# --- State Management (Adapted from XYSpy) ---
+# --- State Management ---
 def load_known_products():
     """Loads known products from the JSON file."""
     if os.path.exists(KNOWN_PRODUCTS_FILE):
@@ -614,21 +649,19 @@ def save_known_products(known_products):
         for query, items in known_products.items():
              products_to_save[query] = {}
              for item_id, item_data in items.items():
-                  # Create a copy and remove the screenshot path before saving
                   data_copy = item_data.copy()
-                  data_copy.pop('screenshot_path', None) # Remove path if it exists
+                  data_copy.pop('screenshot_path', None)
                   products_to_save[query][item_id] = data_copy
 
-        # Write to a temporary file first, then rename (atomic write)
         temp_file = KNOWN_PRODUCTS_FILE + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(products_to_save, f, ensure_ascii=False, indent=2)
-        os.replace(temp_file, KNOWN_PRODUCTS_FILE) # Atomic rename/replace
+        os.replace(temp_file, KNOWN_PRODUCTS_FILE)
         log_message(f"Saved {sum(len(v) for v in products_to_save.values())} known products.", level="debug")
     except Exception as e:
         log_message(f"Error saving known products: {e}", level="error")
 
-# --- Alerting (Adapted from XYSpy) ---
+# --- Alerting ---
 def send_product_alert(product, query, product_id):
     """Sends the new product alert via Telegram."""
     log_message(f"Sending alert for new item {product_id} ('{query}')", level="info")
@@ -640,36 +673,28 @@ def send_product_alert(product, query, product_id):
         message += f"🔗 {product.get('link', 'N/A')}\n"
         message += f"⏰ Found: {product.get('found_time', 'N/A')}"
 
-        # Send text message first
         telegram_bot.send_message(
             chat_id=CONFIG["TELEGRAM_CHAT_ID"],
             text=message,
             disable_web_page_preview=False
         )
 
-        # --- Check config before sending screenshot ---
-        if CONFIG.get("SEND_ITEM_SCREENSHOTS", False): # Default to False if missing
+        if CONFIG.get("SEND_ITEM_SCREENSHOTS", False):
             screenshot_path = product.get("screenshot_path")
             if screenshot_path and os.path.exists(screenshot_path):
                 log_message(f"Sending screenshot: {screenshot_path}", level="debug")
                 try:
-                    # Add a small delay specifically before sending photo
-                    time.sleep(random.uniform(1, 2))
+                    time.sleep(random.uniform(1, 2)) # Small delay before photo
                     with open(screenshot_path, "rb") as photo:
                         telegram_bot.send_photo(
                             chat_id=CONFIG["TELEGRAM_CHAT_ID"],
                             photo=photo
                         )
                 except Exception as photo_e:
-                     # Check for flood error specifically
-                     if "Flood control exceeded" in str(photo_e):
-                          log_message(f"Flood control exceeded while sending photo for {product_id}. Consider disabling screenshots or increasing delays.", level="warning")
-                     else:
-                          log_message(f"Error sending item screenshot {screenshot_path}: {photo_e}", level="warning")
+                     if "Flood control exceeded" in str(photo_e): log_message(f"Flood control exceeded while sending photo for {product_id}.", level="warning")
+                     else: log_message(f"Error sending item screenshot {screenshot_path}: {photo_e}", level="warning")
             elif product.get("image"):
                  log_message(f"Screenshot configured but not available/found for {product_id}. Sending image URL.", level="debug")
-                 # Add delay before sending URL too if needed
-                 # time.sleep(random.uniform(0.5, 1))
                  telegram_bot.send_message(
                     chat_id=CONFIG["TELEGRAM_CHAT_ID"],
                     text=f"Image URL: {product['image']}"
@@ -677,20 +702,24 @@ def send_product_alert(product, query, product_id):
         else:
             log_message(f"Screenshot sending disabled in config for {product_id}.", level="debug")
 
-
     except Exception as e:
-         if "Flood control exceeded" in str(e):
-              log_message(f"Flood control exceeded while sending text alert for {product_id}. Increase main alert_delay.", level="error")
-         else:
-              log_message(f"Error sending product alert for {product_id}: {e}", level="error")
+         if "Flood control exceeded" in str(e): log_message(f"Flood control exceeded while sending text alert for {product_id}. Increase main alert_delay.", level="error")
+         else: log_message(f"Error sending product alert for {product_id}: {e}", level="error")
 
-
-# --- Main Loop (Adapted from XYSpy) ---
+# --- Main Loop ---
 def main():
-    log_message("🤖 Mercari product tracker starting...", level="info")
+    # Send startup message only if bot initialized correctly
+    if not isinstance(telegram_bot, DummyBot):
+         try:
+              telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text="🤖 Mercari product tracker starting...")
+         except Exception as start_msg_e:
+              print(f"Warning: Could not send startup message to Telegram: {start_msg_e}")
+    else:
+         log_message("🤖 Mercari product tracker starting... (Telegram connection failed, using dummy bot)")
+
+
     known_products = load_known_products()
 
-    # Ensure all queries from file exist in known_products dict
     for query in SEARCH_QUERIES:
         if query not in known_products:
             known_products[query] = {}
@@ -700,15 +729,13 @@ def main():
     run_count = 0
     try:
         driver = setup_browser()
-        # No cookie loading/login handling for Mercari initially
 
         while True:
             run_count += 1
             log_message(f"--- Starting Check Cycle {run_count} ---", level="info")
             start_cycle_time = time.time()
 
-            # Update currency rate at the start of each cycle
-            get_jpy_to_eur_rate()
+            get_jpy_to_eur_rate() # Update currency rate
 
             new_items_found_this_cycle = 0
 
@@ -716,11 +743,9 @@ def main():
                 log_message(f"--- Checking Query: '{query}' ---", level="info")
                 query_start_time = time.time()
 
-                # Perform the search, sort, and extraction
                 current_products = search_mercari(driver, query)
 
-                # Compare with known products
-                if query not in known_products: known_products[query] = {} # Should not happen, but safety check
+                if query not in known_products: known_products[query] = {}
 
                 new_products_for_query = {id: product for id, product in current_products.items()
                                           if id not in known_products[query]}
@@ -729,30 +754,23 @@ def main():
                     num_new = len(new_products_for_query)
                     new_items_found_this_cycle += num_new
                     log_message(f"Found {num_new} new items for '{query}'!", level="info")
-                    # Optional: Send summary message before individual alerts
-                    # telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text=f"⚡ Found {num_new} new items for '{query}'!")
 
-                    alert_delay = 3 # Seconds between alerts
+                    alert_delay = 3 # Default delay between alerts
                     for product_id, product in new_products_for_query.items():
                         log_message(f"Pausing {alert_delay}s before sending alert for {product_id}", level="debug")
                         time.sleep(alert_delay)
                         send_product_alert(product, query, product_id)
-                        known_products[query][product_id] = product # Add to known list *after* sending alert
+                        known_products[query][product_id] = product
                 else:
                     log_message(f"No new items found for '{query}'. {len(current_products)} items seen previously or extraction failed.", level="info")
 
-                # Update known products for this query even if no new items, in case old ones disappeared
-                # known_products[query].update(current_products) # Option: Overwrite vs only adding new
-
-                # Save known products after each query (more robust)
-                save_known_products(known_products)
+                save_known_products(known_products) # Save after each query
 
                 query_duration = time.time() - query_start_time
                 log_message(f"--- Finished Query: '{query}' in {query_duration:.2f}s ---", level="info")
 
-                # Delay between queries if multiple exist
                 if len(SEARCH_QUERIES) > 1:
-                    inter_query_delay = random.uniform(5, 15) # Shorter delay between queries
+                    inter_query_delay = random.uniform(5, 15)
                     log_message(f"Waiting {inter_query_delay:.1f} seconds before next query...", level="debug")
                     time.sleep(inter_query_delay)
 
@@ -760,39 +778,36 @@ def main():
             cycle_duration = time.time() - start_cycle_time
             log_message(f"--- Check Cycle {run_count} Complete ({new_items_found_this_cycle} new items total) in {cycle_duration:.2f}s ---", level="info")
 
-            # Calculate sleep time for the main interval
             check_interval = random.randint(CONFIG["CHECK_INTERVAL_MIN"], CONFIG["CHECK_INTERVAL_MAX"])
             sleep_time = check_interval - cycle_duration
             if sleep_time < 0:
                 log_message(f"Warning: Check cycle ({cycle_duration:.1f}s) took longer than minimum interval ({check_interval}s). Sleeping for 10s.", level="warning")
-                sleep_time = 10 # Minimum sleep if cycle overruns
+                sleep_time = 10
 
             log_message(f"Sleeping for {sleep_time:.1f} seconds before next cycle.", level="info")
             time.sleep(sleep_time)
 
     except KeyboardInterrupt:
         log_message("Bot stopped manually (Ctrl+C).", level="info")
-        telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text="🤖 Mercari tracker stopped manually.")
+        if not isinstance(telegram_bot, DummyBot): telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text="🤖 Mercari tracker stopped manually.")
     except Exception as e:
         log_message(f"CRITICAL ERROR in main loop: {e}", level="critical")
-        telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text=f"🚨 CRITICAL ERROR: Mercari tracker stopped!\n{e}")
-        # Try to save final state and screenshot
-        save_known_products(known_products)
-        if driver:
-            try:
-                error_screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"critical_error_{int(time.time())}.png")
-                driver.save_screenshot(error_screenshot_path)
-                with open(error_screenshot_path, "rb") as photo:
-                    telegram_bot.send_photo(chat_id=CONFIG["TELEGRAM_CHAT_ID"], photo=photo, caption=f"Browser state at critical error: {e}")
-            except Exception as ss_error:
-                log_message(f"Could not save screenshot on critical error: {ss_error}", level="error")
+        if not isinstance(telegram_bot, DummyBot):
+             try:
+                  telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text=f"🚨 CRITICAL ERROR: Mercari tracker stopped!\n{e}")
+                  if driver:
+                       error_screenshot_path = os.path.join(ERROR_SCREENSHOT_DIR, f"critical_error_{int(time.time())}.png")
+                       driver.save_screenshot(error_screenshot_path)
+                       with open(error_screenshot_path, "rb") as photo:
+                            telegram_bot.send_photo(chat_id=CONFIG["TELEGRAM_CHAT_ID"], photo=photo, caption=f"Browser state at critical error: {e}")
+             except Exception as report_e:
+                  print(f"Failed to send critical error report to Telegram: {report_e}")
+        save_known_products(known_products) # Attempt to save state on critical error
     finally:
         if driver:
             log_message("Closing browser...", level="debug")
             driver.quit()
         log_message("Bot has stopped.", level="info")
-        # Final message only if not stopped by Ctrl+C
-        # telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text="🤖 Mercari tracker has stopped.")
 
 if __name__ == "__main__":
     main()
