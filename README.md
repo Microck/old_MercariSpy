@@ -154,5 +154,4 @@ The script will start, perform an initial check for all queries (populating the 
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details (or add MIT License text here).
-```
+This project is licensed under the MIT License - see the LICENSE file for details.
