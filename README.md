@@ -72,10 +72,10 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
 4.  **Create `search_queries.txt`:**
     Create a file named `search_queries.txt` in the root directory. Add your Mercari search terms, **one query per line**. Example:
     ```txt
-    初音ミクのフィギュア # Hatsune Miku figurine
-    アシンメトリーレザージャケット # Asymmetrical leather jacket
-    デスノートの画集 # Death Note artbook
-    トルネードマート フレアジーンズ # Tornado Mart flared jeans
+    初音ミクのフィギュア  # Hatsune Miku figurine
+    アシンメトリーレザージャケット  # Asymmetrical leather jacket
+    デスノートの画集  # Death Note artbook
+    トルネードマート フレアジーンズ  # Tornado Mart flared jeans
     ```
 
 5.  **(Optional) First Run in Headed Mode:** It's highly recommended to run the script *once* with `"HEADLESS": false` in `config.json`. This allows you to visually confirm that the browser automation works, selectors are correct, and sorting is applied. Afterwards, set it back to `true` for background operation.
