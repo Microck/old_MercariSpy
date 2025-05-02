@@ -62,6 +62,7 @@ ITEM_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "items")
 ERROR_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "errors")
 BLOCK_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "block_pages")
 PAGE_LOG_DIR = os.path.join(LOG_DIR, "pages")
+FILTERED_BG_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "filtered_backgrounds") # <-- New directory
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -70,6 +71,7 @@ os.makedirs(ITEM_SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(ERROR_SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(BLOCK_SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(PAGE_LOG_DIR, exist_ok=True)
+os.makedirs(FILTERED_BG_SCREENSHOT_DIR, exist_ok=True) # <-- Create the new directory
 # --- End Directory Setup ---
 
 # --- File Paths ---
@@ -81,7 +83,7 @@ JPY_TO_EUR_RATE = None
 RATE_LAST_UPDATED = 0
 # ---
 
-# --- Initialize Telegram Bot ---
+# --- Define Dummy Bot Class (Moved Outside) ---
 class DummyBot: # Fallback if real bot init fails
     """A dummy bot class that prints messages instead of sending them."""
     def send_message(self, chat_id, text, **kwargs):
@@ -154,10 +156,10 @@ def get_jpy_to_eur_rate():
             return JPY_TO_EUR_RATE
         else:
             log_message("Could not find EUR rate in API response.", level="warning")
-            return JPY_TO_EUR_RATE # Return old rate if available
+            return JPY_TO_EUR_RATE
     except Exception as e:
         log_message(f"Failed to fetch or parse currency rate: {e}", level="error")
-        return JPY_TO_EUR_RATE # Return old rate if fetch fails
+        return JPY_TO_EUR_RATE
 
 def jpy_to_euro(jpy_str):
     """Converts a JPY price string (e.g., '¥15,000') to a formatted EUR string."""
@@ -165,7 +167,6 @@ def jpy_to_euro(jpy_str):
     if rate is None:
         return "€N/A (Rate Error)"
     try:
-        # More robust cleaning
         jpy_str_cleaned = re.sub(r'[^\d.]', '', jpy_str)
         if not jpy_str_cleaned:
             return "€N/A (Parse Error)"
@@ -176,68 +177,84 @@ def jpy_to_euro(jpy_str):
         print(f"Error converting JPY string '{jpy_str}' to EUR: {e}")
         return "€N/A (Conv. Error)"
 
-# --- Image Background Check Function ---
-def is_background_white(image_url, border_margin=5, color_threshold=245, border_threshold=0.95):
+# --- Image Background Check Function (MODIFIED) ---
+def is_background_white(image_url, product_id, border_margin=5, color_threshold=245, border_threshold=0.95):
     """
-    Downloads an image and checks if its border pixels are predominantly white.
+    Downloads an image, checks if its border pixels are predominantly white,
+    and saves the image if filtered.
     Returns True if likely white background, False otherwise or on error.
     """
     if not image_url or not image_url.startswith('http'):
         log_message(f"Invalid or missing image URL for background check: {image_url}", level="debug")
-        return False # No valid URL to check
+        return False
 
     log_message(f"Analyzing background for image: ...{image_url[-50:]}", level="debug")
+    img_data = None # Initialize img_data
     try:
-        # Download image data with timeout
-        response = requests.get(image_url, stream=True, timeout=15) # 15 sec timeout for download
+        response = requests.get(image_url, stream=True, timeout=15)
         response.raise_for_status()
-
-        # Check if content looks like an image before processing
         content_type = response.headers.get('content-type', '').lower()
         if not content_type.startswith('image/'):
             log_message(f"Skipping background check, content-type not image: {content_type} for URL ...{image_url[-50:]}", level="debug")
             return False
 
-        img_data = response.content
-        # Open image from bytes, convert to RGB
+        img_data = response.content # Store image data
         img = Image.open(io.BytesIO(img_data)).convert('RGB')
         width, height = img.size
 
-        # Avoid processing tiny images or images smaller than margin
         if width <= border_margin * 2 or height <= border_margin * 2:
             log_message(f"Image too small ({width}x{height}) for background check.", level="debug")
-            return False # Cannot reliably check border
+            return False
 
         border_pixels = []
-        # Sample top/bottom borders
         for x in range(width):
             for y in range(border_margin):
-                border_pixels.append(img.getpixel((x, y))) # Top
-                border_pixels.append(img.getpixel((x, height - 1 - y))) # Bottom
-        # Sample left/right borders (avoiding corners already sampled)
+                border_pixels.append(img.getpixel((x, y)))
+                border_pixels.append(img.getpixel((x, height - 1 - y)))
         for y in range(border_margin, height - border_margin):
              for x in range(border_margin):
-                  border_pixels.append(img.getpixel((x, y))) # Left
-                  border_pixels.append(img.getpixel((width - 1 - x, y))) # Right
+                  border_pixels.append(img.getpixel((x, y)))
+                  border_pixels.append(img.getpixel((width - 1 - x, y)))
 
         if not border_pixels:
-            log_message("No border pixels collected (should not happen if size check passed).", level="warning")
+            log_message("No border pixels collected.", level="warning")
             return False
 
         white_count = 0
         for r, g, b in border_pixels:
-            # Check if pixel is close to white based on threshold
             if r >= color_threshold and g >= color_threshold and b >= color_threshold:
                 white_count += 1
 
         white_percentage = white_count / len(border_pixels)
         is_white = white_percentage >= border_threshold
         log_message(f"Image ...{image_url[-50:]} white border %: {white_percentage:.2f} -> White BG Filter: {is_white}", level="debug")
+
+        # --- Save Filtered Image ---
+        if is_white and img_data: # Check if filter triggered and we have data
+            try:
+                # Use product_id for filename, sanitize it just in case
+                safe_product_id = re.sub(r'[^\w\-]+', '_', product_id) # Replace non-alphanumeric/- with _
+                # Add timestamp to prevent potential overwrites if script restarts quickly
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                filename = f"{safe_product_id}_{timestamp}.jpg" # Save as JPEG
+                filepath = os.path.join(FILTERED_BG_SCREENSHOT_DIR, filename)
+
+                # Save the image using Pillow
+                img_to_save = Image.open(io.BytesIO(img_data))
+                # Ensure it's RGB before saving as JPEG
+                if img_to_save.mode in ("RGBA", "P"):
+                    img_to_save = img_to_save.convert("RGB")
+                img_to_save.save(filepath, "JPEG")
+                log_message(f"Saved filtered image to: {filepath}", level="info")
+            except Exception as save_e:
+                log_message(f"Failed to save filtered image {product_id}: {save_e}", level="error")
+        # --- End Save Filtered Image ---
+
         return is_white
 
     except requests.exceptions.Timeout:
         log_message(f"Timeout downloading image {image_url}", level="warning")
-        return False # Treat download failure as non-white
+        return False
     except requests.exceptions.RequestException as e:
         log_message(f"Failed to download image {image_url}: {e}", level="warning")
         return False
@@ -245,7 +262,6 @@ def is_background_white(image_url, border_margin=5, color_threshold=245, border_
          log_message(f"Failed to identify image format for {image_url}", level="warning")
          return False
     except Exception as e:
-        # Catch other PIL errors or unexpected issues
         log_message(f"Failed to process image {image_url}: {e}", level="warning")
         return False
 
@@ -274,10 +290,9 @@ def setup_browser():
         else:
             log_message("Running in HEADED mode.", level="debug")
 
-        # Let UC handle the version detection unless specified
         # If you encounter version mismatch errors, uncomment and set your Chrome version:
-        # driver = uc.Chrome(options=options, version_main=135)
         driver = uc.Chrome(options=options, version_main=135) # Force version 135
+        # driver = uc.Chrome(options=options, version_main=None)
         driver.set_page_load_timeout(60)
         log_message("Browser setup complete.", level="debug")
         return driver
@@ -479,16 +494,19 @@ def extract_products_mercari(driver, query):
                 except Exception as img_e: log_message(f"Error extracting image for {product_id}: {img_e}", level="warning")
 
                 # --- White Background Check ---
+                # Perform check only if filter enabled AND we have an image URL
                 if CONFIG.get("FILTER_WHITE_BACKGROUNDS", False) and item_image:
+                    # Pass product_id to the check function
                     is_white_bg = is_background_white(
                         item_image,
+                        product_id, # Pass the ID for filename
                         color_threshold=CONFIG.get("WHITE_BG_COLOR_THRESHOLD", 245),
                         border_threshold=CONFIG.get("WHITE_BG_BORDER_THRESHOLD", 0.95)
                     )
                     if is_white_bg:
                         log_message(f"Skipping item {product_id} due to detected white background.", level="info")
-                        processed_count += 1
-                        continue
+                        processed_count += 1 # Count as processed, but not stored
+                        continue # Skip to the next item_element in the loop
                 # --- End White Background Check ---
 
                 # --- Screenshot ---
@@ -499,6 +517,7 @@ def extract_products_mercari(driver, query):
                     screenshot_path = None
 
                 # --- Store Product ---
+                # Only store if essential info found AND background filter didn't skip it
                 if product_id and link and title != "Title not found" and price != "Price not found":
                     euro_price = jpy_to_euro(price)
                     products[product_id] = {
@@ -511,12 +530,13 @@ def extract_products_mercari(driver, query):
                         "screenshot_path": screenshot_path
                     }
                     processed_count += 1
-                    stored_count += 1
+                    stored_count += 1 # Increment stored count
                     log_message(f"Extracted item {product_id}: {title[:30]}... - {price}", level="debug")
                 else:
-                    if not is_white_bg:
+                    # Log why it wasn't stored (already logged if white bg)
+                    if not is_white_bg: # Avoid double logging if skipped for white bg
                          log_message(f"Skipping storage for item {product_id or i} due to missing essential data (Title: '{title}', Price: '{price}').", level="warning")
-                    processed_count += 1
+                    processed_count += 1 # Still counts as processed
 
             except StaleElementReferenceException:
                 log_message(f"Item element became stale during processing (item index {i}). Skipping.", level="warning")
