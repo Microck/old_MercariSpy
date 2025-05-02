@@ -50,8 +50,6 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
     ```
 
 3.  **Configure `config.json`:**
-    Create a file named `config.json` in the root directory. Copy and paste the example below, then **edit the values**:
-
     ```json
     {
       "TELEGRAM_TOKEN": "YOUR_TELEGRAM_BOT_TOKEN",
@@ -69,8 +67,8 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
     *   **`TELEGRAM_CHAT_ID`**: **(Required)** The ID of the Telegram chat where notifications should be sent. Get this using `@userinfobot` or similar methods.
     *   See the **Configuration** section below for details on other options.
 
-4.  **Create `search_queries.txt`:**
-    Create a file named `search_queries.txt` in the root directory. Add your Mercari search terms, **one query per line**. Example:
+4.  **Modify `search_queries.txt`:**
+    Add your Mercari search terms, **one query per line**. Example:
     ```bash
     初音ミクのフィギュア  # Hatsune Miku figurine
     アシンメトリーレザージャケット  # Asymmetrical leather jacket
