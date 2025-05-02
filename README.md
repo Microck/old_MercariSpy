@@ -71,7 +71,7 @@ This script uses Selenium and Undetected Chromedriver to simulate real browser a
 
 4.  **Create `search_queries.txt`:**
     Create a file named `search_queries.txt` in the root directory. Add your Mercari search terms, **one query per line**. Example:
-    ```txt
+    ```bash
     初音ミクのフィギュア  # Hatsune Miku figurine
     アシンメトリーレザージャケット  # Asymmetrical leather jacket
     デスノートの画集  # Death Note artbook
