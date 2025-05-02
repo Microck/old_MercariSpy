@@ -6,6 +6,7 @@ A Python-based monitoring tool to track new listings on Mercari.jp based on your
 This script uses Selenium and Undetected Chromedriver to simulate real browser activity, aiming to bypass basic bot detection measures employed by Mercari.jp.
 
 <img src="screenshots/block_pages/example.jpg" alt="Examples" style="width: 100%; height: auto;">
+
 ---
 
 ## Features
