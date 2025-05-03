@@ -62,7 +62,7 @@ ITEM_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "items")
 ERROR_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "errors")
 BLOCK_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "block_pages")
 PAGE_LOG_DIR = os.path.join(LOG_DIR, "pages")
-FILTERED_BG_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "filtered_backgrounds") # <-- New directory
+FILTERED_BG_SCREENSHOT_DIR = os.path.join(SCREENSHOT_DIR, "filtered_backgrounds")
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -71,7 +71,7 @@ os.makedirs(ITEM_SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(ERROR_SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(BLOCK_SCREENSHOT_DIR, exist_ok=True)
 os.makedirs(PAGE_LOG_DIR, exist_ok=True)
-os.makedirs(FILTERED_BG_SCREENSHOT_DIR, exist_ok=True) # <-- Create the new directory
+os.makedirs(FILTERED_BG_SCREENSHOT_DIR, exist_ok=True)
 # --- End Directory Setup ---
 
 # --- File Paths ---
@@ -177,7 +177,7 @@ def jpy_to_euro(jpy_str):
         print(f"Error converting JPY string '{jpy_str}' to EUR: {e}")
         return "€N/A (Conv. Error)"
 
-# --- Image Background Check Function (MODIFIED) ---
+# --- Image Background Check Function ---
 def is_background_white(image_url, product_id, border_margin=5, color_threshold=245, border_threshold=0.95):
     """
     Downloads an image, checks if its border pixels are predominantly white,
@@ -189,7 +189,7 @@ def is_background_white(image_url, product_id, border_margin=5, color_threshold=
         return False
 
     log_message(f"Analyzing background for image: ...{image_url[-50:]}", level="debug")
-    img_data = None # Initialize img_data
+    img_data = None
     try:
         response = requests.get(image_url, stream=True, timeout=15)
         response.raise_for_status()
@@ -198,7 +198,7 @@ def is_background_white(image_url, product_id, border_margin=5, color_threshold=
             log_message(f"Skipping background check, content-type not image: {content_type} for URL ...{image_url[-50:]}", level="debug")
             return False
 
-        img_data = response.content # Store image data
+        img_data = response.content
         img = Image.open(io.BytesIO(img_data)).convert('RGB')
         width, height = img.size
 
@@ -229,26 +229,19 @@ def is_background_white(image_url, product_id, border_margin=5, color_threshold=
         is_white = white_percentage >= border_threshold
         log_message(f"Image ...{image_url[-50:]} white border %: {white_percentage:.2f} -> White BG Filter: {is_white}", level="debug")
 
-        # --- Save Filtered Image ---
-        if is_white and img_data: # Check if filter triggered and we have data
+        if is_white and img_data:
             try:
-                # Use product_id for filename, sanitize it just in case
-                safe_product_id = re.sub(r'[^\w\-]+', '_', product_id) # Replace non-alphanumeric/- with _
-                # Add timestamp to prevent potential overwrites if script restarts quickly
+                safe_product_id = re.sub(r'[^\w\-]+', '_', product_id)
                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                filename = f"{safe_product_id}_{timestamp}.jpg" # Save as JPEG
+                filename = f"{safe_product_id}_{timestamp}.jpg"
                 filepath = os.path.join(FILTERED_BG_SCREENSHOT_DIR, filename)
-
-                # Save the image using Pillow
                 img_to_save = Image.open(io.BytesIO(img_data))
-                # Ensure it's RGB before saving as JPEG
                 if img_to_save.mode in ("RGBA", "P"):
                     img_to_save = img_to_save.convert("RGB")
                 img_to_save.save(filepath, "JPEG")
                 log_message(f"Saved filtered image to: {filepath}", level="info")
             except Exception as save_e:
                 log_message(f"Failed to save filtered image {product_id}: {save_e}", level="error")
-        # --- End Save Filtered Image ---
 
         return is_white
 
@@ -410,7 +403,7 @@ def extract_products_mercari(driver, query):
              return {}
 
         processed_count = 0
-        stored_count = 0 # Keep track of items actually stored
+        stored_count = 0
         for i, item_element in enumerate(item_elements):
             product_id = None
             link = None
@@ -418,26 +411,38 @@ def extract_products_mercari(driver, query):
             price = "Price not found"
             item_image = ""
             screenshot_path = None
-            is_white_bg = False # Default for this item
+            is_white_bg = False
 
             try:
-                # Scroll element into view gently
                 driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", item_element)
-                time.sleep(0.3) # Small pause after scroll
+                time.sleep(0.3)
 
-                # --- Link and ID ---
+                # --- Link and ID (Updated Logic) ---
                 try:
                     link_element_selector = "a[data-testid='thumbnail-link']"
                     link_element = item_element.find_element(By.CSS_SELECTOR, link_element_selector)
                     link = link_element.get_attribute('href')
+
                     if link:
-                        product_id_match = re.search(r'/(m\d+)/?$', link)
-                        if product_id_match: product_id = product_id_match.group(1)
-                        else: product_id = f"hash_{hash(link)}_{i}"
-                    else: raise NoSuchElementException("Link href was empty")
+                        product_id_match_item = re.search(r'/(m\d+)/?$', link)
+                        product_id_match_shop = re.search(r'/shops/product/([^/?]+)', link)
+
+                        if product_id_match_item:
+                            product_id = product_id_match_item.group(1)
+                            log_message(f"Extracted standard item ID: {product_id}", level="debug")
+                        elif product_id_match_shop:
+                            product_id = product_id_match_shop.group(1)
+                            product_id = f"shop_{product_id}" # Prefix shop IDs
+                            log_message(f"Extracted shop item ID: {product_id}", level="debug")
+                        else:
+                            product_id = f"hash_{hash(link)}_{i}"
+                            log_message(f"Could not extract standard/shop ID from link: {link}. Using fallback hash: {product_id}", level="warning")
+                    else:
+                        raise NoSuchElementException("Link href attribute was empty or missing")
                 except NoSuchElementException:
-                    log_message(f"Could not find link/ID using selector '{link_element_selector}' for item {i}. Skipping.", level="warning")
+                    log_message(f"Could not find primary link element for item {i} using selector '{link_element_selector}'. Skipping.", level="warning")
                     continue
+                # --- End Link and ID ---
 
                 # --- Title ---
                 try:
@@ -458,7 +463,7 @@ def extract_products_mercari(driver, query):
 
                 # --- Price ---
                 try:
-                    thumb_div_selector = "div.merItemThumbnail" # Assuming this class is stable enough
+                    thumb_div_selector = "div.merItemThumbnail"
                     thumb_div = item_element.find_element(By.CSS_SELECTOR, thumb_div_selector)
                     aria_label = thumb_div.get_attribute('aria-label')
                     if aria_label:
@@ -494,19 +499,17 @@ def extract_products_mercari(driver, query):
                 except Exception as img_e: log_message(f"Error extracting image for {product_id}: {img_e}", level="warning")
 
                 # --- White Background Check ---
-                # Perform check only if filter enabled AND we have an image URL
                 if CONFIG.get("FILTER_WHITE_BACKGROUNDS", False) and item_image:
-                    # Pass product_id to the check function
                     is_white_bg = is_background_white(
                         item_image,
-                        product_id, # Pass the ID for filename
+                        product_id, # Pass ID for saving
                         color_threshold=CONFIG.get("WHITE_BG_COLOR_THRESHOLD", 245),
                         border_threshold=CONFIG.get("WHITE_BG_BORDER_THRESHOLD", 0.95)
                     )
                     if is_white_bg:
                         log_message(f"Skipping item {product_id} due to detected white background.", level="info")
-                        processed_count += 1 # Count as processed, but not stored
-                        continue # Skip to the next item_element in the loop
+                        processed_count += 1
+                        continue
                 # --- End White Background Check ---
 
                 # --- Screenshot ---
@@ -517,7 +520,6 @@ def extract_products_mercari(driver, query):
                     screenshot_path = None
 
                 # --- Store Product ---
-                # Only store if essential info found AND background filter didn't skip it
                 if product_id and link and title != "Title not found" and price != "Price not found":
                     euro_price = jpy_to_euro(price)
                     products[product_id] = {
@@ -530,13 +532,12 @@ def extract_products_mercari(driver, query):
                         "screenshot_path": screenshot_path
                     }
                     processed_count += 1
-                    stored_count += 1 # Increment stored count
+                    stored_count += 1
                     log_message(f"Extracted item {product_id}: {title[:30]}... - {price}", level="debug")
                 else:
-                    # Log why it wasn't stored (already logged if white bg)
-                    if not is_white_bg: # Avoid double logging if skipped for white bg
+                    if not is_white_bg:
                          log_message(f"Skipping storage for item {product_id or i} due to missing essential data (Title: '{title}', Price: '{price}').", level="warning")
-                    processed_count += 1 # Still counts as processed
+                    processed_count += 1
 
             except StaleElementReferenceException:
                 log_message(f"Item element became stale during processing (item index {i}). Skipping.", level="warning")
@@ -665,31 +666,49 @@ def load_known_products():
     if os.path.exists(KNOWN_PRODUCTS_FILE):
         try:
             with open(KNOWN_PRODUCTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                loaded_data = json.load(f)
+                log_message(f"Successfully loaded {sum(len(v) for v in loaded_data.values())} items from {KNOWN_PRODUCTS_FILE}", level="info")
+                keys_sample = list(loaded_data.keys())[:3]
+                log_message(f"Sample query keys loaded: {keys_sample}", level="debug")
+                if keys_sample and loaded_data.get(keys_sample[0]): # Check if key exists
+                     items_sample = list(loaded_data[keys_sample[0]].keys())[:5]
+                     log_message(f"Sample item IDs for '{keys_sample[0]}': {items_sample}", level="debug")
+                return loaded_data
         except json.JSONDecodeError:
              log_message(f"Error decoding {KNOWN_PRODUCTS_FILE}. Starting fresh.", level="warning")
              return {}
         except Exception as e:
             log_message(f"Error loading known products: {e}", level="error")
             return {}
+    log_message(f"{KNOWN_PRODUCTS_FILE} not found. Starting fresh.", level="info")
     return {}
 
 def save_known_products(known_products):
     """Saves known products to the JSON file, excluding screenshot paths."""
+    log_message(f"Attempting to save known products...", level="debug")
     try:
         products_to_save = {}
+        total_items_to_save = 0
         for query, items in known_products.items():
              products_to_save[query] = {}
              for item_id, item_data in items.items():
                   data_copy = item_data.copy()
                   data_copy.pop('screenshot_path', None)
                   products_to_save[query][item_id] = data_copy
+                  total_items_to_save += 1
+
+        log_message(f"Saving {total_items_to_save} items across {len(products_to_save)} queries.", level="debug")
+        keys_sample = list(products_to_save.keys())[:3]
+        log_message(f"Sample query keys being saved: {keys_sample}", level="debug")
+        if keys_sample and products_to_save.get(keys_sample[0]): # Check if key exists
+             items_sample = list(products_to_save[keys_sample[0]].keys())[:5]
+             log_message(f"Sample item IDs being saved for '{keys_sample[0]}': {items_sample}", level="debug")
 
         temp_file = KNOWN_PRODUCTS_FILE + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(products_to_save, f, ensure_ascii=False, indent=2)
         os.replace(temp_file, KNOWN_PRODUCTS_FILE)
-        log_message(f"Saved {sum(len(v) for v in products_to_save.values())} known products.", level="debug")
+        log_message(f"Successfully saved known products to {KNOWN_PRODUCTS_FILE}", level="info")
     except Exception as e:
         log_message(f"Error saving known products: {e}", level="error")
 
@@ -716,7 +735,7 @@ def send_product_alert(product, query, product_id):
             if screenshot_path and os.path.exists(screenshot_path):
                 log_message(f"Sending screenshot: {screenshot_path}", level="debug")
                 try:
-                    time.sleep(random.uniform(1, 2)) # Small delay before photo
+                    time.sleep(random.uniform(1, 2))
                     with open(screenshot_path, "rb") as photo:
                         telegram_bot.send_photo(
                             chat_id=CONFIG["TELEGRAM_CHAT_ID"],
@@ -749,23 +768,29 @@ def main():
     else:
          log_message("🤖 Mercari product tracker starting... (Telegram connection failed, using dummy bot)")
 
-
-    known_products = load_known_products()
-
+    # --- Load and Initialize known_products ---
+    known_products_data = load_known_products()
+    if not isinstance(known_products_data, dict):
+        log_message("Loaded known_products is not a dictionary. Starting fresh.", level="warning")
+        known_products_data = {}
     for query in SEARCH_QUERIES:
-        if query not in known_products:
-            known_products[query] = {}
-            log_message(f"Initializing known products for new query: '{query}'", level="debug")
+        if query not in known_products_data:
+            known_products_data[query] = {}
+            log_message(f"Initializing known products entry for new query: '{query}'", level="debug")
+    known_products = known_products_data
+    # ----------------------------------------------------
 
     driver = None
     run_count = 0
-    try:
+    try: # Main execution block
         driver = setup_browser()
 
         while True:
             run_count += 1
             log_message(f"--- Starting Check Cycle {run_count} ---", level="info")
             start_cycle_time = time.time()
+
+            alerted_ids_this_cycle = set() # Track alerts within this specific cycle
 
             get_jpy_to_eur_rate() # Update currency rate
 
@@ -777,22 +802,38 @@ def main():
 
                 current_products = search_mercari(driver, query)
 
-                if query not in known_products: known_products[query] = {}
+                # Ensure the query key exists
+                if query not in known_products:
+                    log_message(f"Query '{query}' unexpectedly missing from known_products dict. Re-initializing.", level="warning")
+                    known_products[query] = {}
 
                 new_products_for_query = {id: product for id, product in current_products.items()
                                           if id not in known_products[query]}
 
                 if new_products_for_query:
                     num_new = len(new_products_for_query)
-                    new_items_found_this_cycle += num_new
-                    log_message(f"Found {num_new} new items for '{query}'!", level="info")
+                    log_message(f"Found {num_new} potential new items for '{query}' (pre-session check).", level="info")
 
                     alert_delay = 3 # Default delay between alerts
+                    items_actually_alerted = 0
                     for product_id, product in new_products_for_query.items():
-                        log_message(f"Pausing {alert_delay}s before sending alert for {product_id}", level="debug")
-                        time.sleep(alert_delay)
-                        send_product_alert(product, query, product_id)
-                        known_products[query][product_id] = product
+                        # Check if already alerted this cycle
+                        if product_id not in alerted_ids_this_cycle:
+                            items_actually_alerted += 1
+                            new_items_found_this_cycle += 1
+
+                            log_message(f"Pausing {alert_delay}s before sending alert for {product_id}", level="debug")
+                            time.sleep(alert_delay)
+                            send_product_alert(product, query, product_id)
+                            known_products[query][product_id] = product
+                            alerted_ids_this_cycle.add(product_id)
+                        else:
+                             log_message(f"Item {product_id} already alerted in this cycle for another query. Skipping duplicate alert.", level="debug")
+                             known_products[query][product_id] = product
+
+                    if items_actually_alerted > 0:
+                         log_message(f"Sent alerts for {items_actually_alerted} new items for '{query}'.", level="info")
+
                 else:
                     log_message(f"No new items found for '{query}'. {len(current_products)} items seen previously or extraction failed.", level="info")
 
@@ -824,6 +865,12 @@ def main():
         if not isinstance(telegram_bot, DummyBot): telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text="🤖 Mercari tracker stopped manually.")
     except Exception as e:
         log_message(f"CRITICAL ERROR in main loop: {e}", level="critical")
+        if 'known_products' in locals() or 'known_products' in globals():
+             log_message("Attempting to save known_products state on critical error...", level="info")
+             save_known_products(known_products)
+        else:
+             log_message("Cannot save known_products state as it was not defined during critical error.", level="error")
+
         if not isinstance(telegram_bot, DummyBot):
              try:
                   telegram_bot.send_message(chat_id=CONFIG["TELEGRAM_CHAT_ID"], text=f"🚨 CRITICAL ERROR: Mercari tracker stopped!\n{e}")
@@ -834,7 +881,6 @@ def main():
                             telegram_bot.send_photo(chat_id=CONFIG["TELEGRAM_CHAT_ID"], photo=photo, caption=f"Browser state at critical error: {e}")
              except Exception as report_e:
                   print(f"Failed to send critical error report to Telegram: {report_e}")
-        save_known_products(known_products) # Attempt to save state on critical error
     finally:
         if driver:
             log_message("Closing browser...", level="debug")
