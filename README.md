@@ -1,3 +1,7 @@
+> **This project is archived and no longer maintained.** It may be outdated or incompatible with current dependencies.
+
+---
+
 # 🇯🇵 MercariSpy 🕵️
 ## Mercari Product Monitor Bot
 
